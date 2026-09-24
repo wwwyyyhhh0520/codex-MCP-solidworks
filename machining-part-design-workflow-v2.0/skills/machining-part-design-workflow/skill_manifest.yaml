@@ -1,0 +1,6 @@
+name: machining-part-design-workflow
+version: 1.0
+category: engineering-cad
+runtime:
+  agent: required
+  mcp: optional

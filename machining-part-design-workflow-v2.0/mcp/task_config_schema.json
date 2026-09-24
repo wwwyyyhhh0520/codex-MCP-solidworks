@@ -1,0 +1,9 @@
+{
+  "task_name": "machining_design",
+  "workflow": [
+    "requirement_analysis",
+    "cad_analysis",
+    "validation",
+    "delivery"
+  ]
+}

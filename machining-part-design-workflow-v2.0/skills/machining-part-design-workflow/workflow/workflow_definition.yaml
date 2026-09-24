@@ -1,0 +1,8 @@
+workflow:
+  - requirement_analysis
+  - cad_analysis
+  - semantic_extraction
+  - design_execution
+  - drawing_generation
+  - validation
+  - delivery

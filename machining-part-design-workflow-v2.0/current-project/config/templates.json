@@ -1,0 +1,63 @@
+{
+  "template_directory": "C:\\Users\\18015\\Desktop\\New folder1\\标准\\3",
+  "drawing_templates": [
+    {
+      "id": "A4",
+      "sheet_size": "A4",
+      "template_path": "C:\\Users\\18015\\Desktop\\New folder1\\标准\\3\\A4.drwdot",
+      "sheet_format_path": "C:\\Users\\18015\\Desktop\\New folder1\\标准\\3\\A4.slddrt",
+      "role": "mvp_default_small_part"
+    },
+    {
+      "id": "A3",
+      "sheet_size": "A3",
+      "template_path": "C:\\Users\\18015\\Desktop\\New folder1\\标准\\3\\A3.drwdot",
+      "sheet_format_path": null,
+      "role": "medium_part"
+    },
+    {
+      "id": "A2",
+      "sheet_size": "A2",
+      "template_path": "C:\\Users\\18015\\Desktop\\New folder1\\标准\\3\\A2.drwdot",
+      "sheet_format_path": null,
+      "role": "large_part"
+    },
+    {
+      "id": "工程图",
+      "sheet_size": "unknown",
+      "template_path": "C:\\Users\\18015\\Desktop\\New folder1\\标准\\3\\工程图.DRWDOT",
+      "sheet_format_path": null,
+      "role": "generic_drawing_template"
+    }
+  ],
+  "part_templates": [
+    {
+      "id": "GBPART",
+      "template_path": "C:\\Users\\18015\\Desktop\\New folder1\\标准\\3\\GBPART.prtdot",
+      "role": "reference_only_not_used_for_source_model"
+    },
+    {
+      "id": "零件",
+      "template_path": "C:\\Users\\18015\\Desktop\\New folder1\\标准\\3\\零件.PRTDOT",
+      "role": "reference_only_not_used_for_source_model"
+    }
+  ],
+  "assembly_templates": [
+    {
+      "id": "GBASSEMBLY",
+      "template_path": "C:\\Users\\18015\\Desktop\\New folder1\\标准\\3\\GBASSEMBLY.asmdot",
+      "role": "out_of_scope_for_part_drawing_mvp"
+    },
+    {
+      "id": "装配体",
+      "template_path": "C:\\Users\\18015\\Desktop\\New folder1\\标准\\3\\装配体.ASMDOT",
+      "role": "out_of_scope_for_part_drawing_mvp"
+    }
+  ],
+  "selection_rules": {
+    "units": "mm",
+    "small_part_max_extent_mm": 120,
+    "medium_part_max_extent_mm": 260,
+    "preferred_order": ["A4", "A3", "A2"]
+  }
+}

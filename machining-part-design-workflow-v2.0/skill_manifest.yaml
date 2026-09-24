@@ -1,0 +1,15 @@
+name: machining-part-design-workflow
+version: 2.0.0
+category: engineering-cad
+runtime:
+  agent: required
+  mcp: included
+  solidworks: optional-for-offline; required-for-native-execution
+contents:
+  skill: skills/machining-part-design-workflow
+  mcp: mcp/current-solidworks-mcp
+  source: current-project
+quality:
+  evidence_first: true
+  fail_closed: true
+  company_content_redacted: false

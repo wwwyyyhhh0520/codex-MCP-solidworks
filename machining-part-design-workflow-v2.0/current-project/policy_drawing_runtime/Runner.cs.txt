@@ -1,0 +1,248 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using SolidWorks.Interop.sldworks;
+using SolidWorks.Interop.swconst;
+
+// --probe semantics template output-dir; --execute plan semantics template output-dir output-stem
+if(args.Length<4) return 64;
+bool probe=args[0]=="--probe";
+bool attachExisting=args[0]=="--attach-manual";
+bool manual=args[0]=="--manual"||attachExisting;
+string semanticsPath=probe?args[1]:args[2],template=probe?args[2]:args[3],output=Path.GetFullPath(probe?args[3]:args[4]);
+Directory.CreateDirectory(output);
+using var log=new StreamWriter(Path.Combine(output,probe?"projection_probe.log":"policy_runtime.log")){AutoFlush=true};Console.SetOut(log);Console.SetError(log);
+string stage="START";
+using var timeout=new System.Threading.Timer(_=>{Console.WriteLine("RUNTIME_TIMEOUT:"+stage);Console.Out.Flush();System.Environment.Exit(124);},null,180000,System.Threading.Timeout.Infinite);
+try {
+    using var sj=JsonDocument.Parse(File.ReadAllText(semanticsPath));var sem=sj.RootElement;
+    stage="SINGLE_INSTANCE_GUI_PREFLIGHT";
+    using var visibleSession=attachExisting?VisibleSolidWorksSession.Attach():VisibleSolidWorksSession.Start();
+    var sw=visibleSession.Root;int err=0,warn=0;
+    var modelPath=sem.GetProperty("model_path").GetString()!;
+    var part=sw.OpenDoc6(modelPath,(int)swDocumentTypes_e.swDocPART,(int)(swOpenDocOptions_e.swOpenDocOptions_Silent|swOpenDocOptions_e.swOpenDocOptions_ReadOnly),"",ref err,ref warn)??throw new Exception("PART_OPEN_FAILED");
+    ModelDoc2 dm;
+    bool existingBase=!probe&&!manual&&args.Length==7;
+    string? workingCopy=null;
+    if(existingBase) {
+        workingCopy=Path.Combine(output,args[5]+".SLDDRW");
+        if(File.Exists(workingCopy))throw new Exception("OUTPUT_ALREADY_EXISTS");
+        File.Copy(Path.GetFullPath(args[6]),workingCopy,false);
+        dm=sw.OpenDoc6(workingCopy,(int)swDocumentTypes_e.swDocDRAWING,(int)swOpenDocOptions_e.swOpenDocOptions_Silent,"",ref err,ref warn)??throw new Exception("BASE_DRAWING_COPY_OPEN_FAILED");
+    }else dm=sw.NewDocument(Path.GetFullPath(template),0,0,0) as ModelDoc2 ?? throw new Exception("TEMPLATE_CREATE_FAILED");
+    var drawing=(DrawingDoc)dm;var sheet=(Sheet)drawing.GetCurrentSheet();double sheetW=0,sheetH=0;sheet.GetSize(ref sheetW,ref sheetH);
+    var math=(MathUtility)sw.GetMathUtility();var holes=LoadHoleSemantics(semanticsPath);
+    View Create(string role,double x,double y,double scale) {
+        string en=role[..1].ToUpperInvariant()+role[1..].ToLowerInvariant();
+        string local=role.ToUpperInvariant() switch{"FRONT"=>"前视","BACK"=>"后视","LEFT"=>"左视","RIGHT"=>"右视","TOP"=>"上视","BOTTOM"=>"下视",_=>throw new Exception("UNSUPPORTED_ORIENTATION")};
+        View? v=null;
+        if(existingBase) {
+            using var candidatePlan=JsonDocument.Parse(File.ReadAllText(args[1]));
+            var expected=candidatePlan.RootElement.GetProperty("view_coverage_matrix").EnumerateArray().Single(c=>c.GetProperty("orientation").GetString()==role).GetProperty("transform").EnumerateArray().Take(9).Select(z=>z.GetDouble()).ToArray();
+            for(var current=(drawing.GetFirstView() as View)?.GetNextView() as View;current!=null;current=current.GetNextView() as View) {
+                if(ToDoubles(current.ModelToViewTransform.ArrayData).Take(9).Zip(expected,(a,b)=>Math.Abs(a-b)).All(d=>d<1e-8)){v=current;break;}
+            }
+            if(v!=null&&v.GetFirstDisplayDimension5()!=null)throw new Exception("BASE_VIEW_ALREADY_ANNOTATED");
+        }
+        if(v==null)foreach(var alias in new[]{"*"+en,en,"*"+local,local}){v=drawing.CreateDrawViewFromModelView3(modelPath,alias,x,y,0) as View;if(v!=null)break;}
+        if(v==null)throw new Exception("VIEW_CREATE_FAILED:"+role);
+        v.UseSheetScale=0;v.ScaleDecimal=scale;dm.EditRebuild3();v.Position=new[]{x,y};dm.ForceRebuild3(false);return v;
+    }
+    if(probe) {
+        stage="PROJECTION_PROBE";var rows=new List<object>();
+        foreach(var c in sem.GetProperty("view_candidates").EnumerateArray()) {
+            var role=c.GetProperty("orientation").GetString()!;var v=Create(role,sheetW/2,sheetH/2,1);
+            var axes=new Dictionary<string,double[]>();foreach(var axis in new[]{"X","Y","Z"})try{axes[axis]=ProjectModelAxisDirectionToSheet(math,v,axis);}catch(InvalidOperationException){}
+            var circles=EnumerateVisibleCircles(v);var vertices=EnumerateVisibleProjectedVertices(v);
+            var matched=holes.Values.Select(h=>new{semantic_ref=h.Id,visible_opening_count=MatchHoleCircles(circles,h.PlacementPoints).Count,semantic_placement_count=h.PlacementPoints.Count,pattern=ClassifyPattern(h.PlacementPoints)}).ToArray();
+            var outline=ToDoubles(v.GetOutline());
+            rows.Add(new{orientation=role,native_name=v.Name,axes,outline_m=outline,projected_width_m=c.GetProperty("projected_width_m").GetDouble(),projected_height_m=c.GetProperty("projected_height_m").GetDouble(),visible_vertex_count=vertices.Count,visible_circle_count=circles.Count,hole_groups=matched,transform=ToDoubles(v.ModelToViewTransform.ArrayData),vertices=vertices.Select(a=>a.ModelPoint),geometry_evidence="ACTUAL_SOLIDWORKS_STANDARD_VIEW_PROJECTION",opposite_occlusion_equivalence="NOT_EVALUATED"});
+        }
+        Write(output,"view_projection_evidence.json",new{sheet_width_m=sheetW,sheet_height_m=sheetH,template=Path.GetFullPath(template),model_path=modelPath,candidates=rows});
+        Console.WriteLine("PROBE_COMPLETE");sw.CloseDoc(dm.GetTitle());return 0;
+    }
+    stage="EXECUTE_POLICY_PLAN";
+    using var pj=JsonDocument.Parse(File.ReadAllText(args[1]));var plan=pj.RootElement;
+    var policy=plan.GetProperty("policy");var layout=policy.GetProperty("annotation_layout");
+    double Metric(string key)=>layout.GetProperty(key).GetDouble()/1000;
+    var usable=plan.GetProperty("usable_sheet_bbox_m").EnumerateArray().Select(x=>x.GetDouble()).ToArray();
+    var reserves=plan.GetProperty("reserved_regions").EnumerateArray().Select(r=>r.GetProperty("bbox_m").EnumerateArray().Select(x=>x.GetDouble()).ToArray()).ToArray();
+    var owners=new Dictionary<string,View>();var viewEvidence=new List<object>();
+    foreach(var spec in plan.GetProperty("views").EnumerateArray()) {
+        string role=spec.GetProperty("orientation").GetString()!;var pos=spec.GetProperty("placement");var sc=spec.GetProperty("scale");
+        var v=Create(role,pos.GetProperty("x_m").GetDouble(),pos.GetProperty("y_m").GetDouble(),sc.GetProperty("numerator").GetDouble()/sc.GetProperty("denominator").GetDouble());
+        var b=ToDoubles(v.GetOutline());double dx=Math.Clamp(0,usable[0]-b[0],usable[2]-b[2]),dy=Math.Clamp(0,usable[1]-b[1],usable[3]-b[3]);
+        var p=ToDoubles(v.Position);v.Position=new[]{p[0]+dx,p[1]+dy};dm.EditRebuild3();owners.Add(role,v);
+        viewEvidence.Add(new{role,native_name=v.Name,position_m=ToDoubles(v.Position),scale=v.ScaleDecimal,outline_m=ToDoubles(v.GetOutline()),boundary_correction_m=new[]{dx,dy},raw_vertices=EnumerateVisibleProjectedVertices(v).Select(q=>q.ModelPoint)});
+    }
+    Write(output,"runtime_views.json",viewEvidence);
+    var viewBoxes=owners.Values.Select(v=>ToDoubles(v.GetOutline())).ToArray();
+    bool Overlap(double[] a,double[] b)=>Math.Min(a[2],b[2])>Math.Max(a[0],b[0])+1e-9&&Math.Min(a[3],b[3])>Math.Max(a[1],b[1])+1e-9;
+    bool Outside(double[] b)=>b[0]<usable[0]||b[1]<usable[1]||b[2]>usable[2]||b[3]>usable[3];
+    int viewOverlap=Enumerable.Range(0,viewBoxes.Length).Sum(i=>viewBoxes.Skip(i+1).Count(b=>Overlap(viewBoxes[i],b)));
+    int reservedOverlap=viewBoxes.Sum(b=>reserves.Count(r=>Overlap(b,r)));
+    if(viewOverlap>0||reservedOverlap>0||viewBoxes.Any(Outside))throw new Exception("VIEW_LAYOUT_PREFLIGHT_FAILED");
+    var annotations=new List<PolicyAnnotation>();var lineage=new List<object>();var unresolved=new List<object>();var definitions=new List<Definition>();var semanticKeys=new HashSet<string>();
+    Definition MakeDef(string id,string cat,string role,string axis,string? feature)=>new(){AnnotationId=id,Category=cat,OwnerView=JsonSerializer.SerializeToElement(role),Geometry=JsonSerializer.SerializeToElement(new{endpoint_a=new{axis},endpoint_b=new{axis},hole_group=new{semantic_group_ref=feature},entity_strategy=cat=="OVERALL_DIMENSION"?"PROJECTED_AXIS_EXTREMA":"VISIBLE_HOLE_OPENING"}),Dimension=JsonSerializer.SerializeToElement(new{orientation="HORIZONTAL"}),Placement=new(){Lane=cat,Side="ABOVE"},Creation=JsonSerializer.SerializeToElement(new{native_only=true}),Validation=JsonSerializer.SerializeToElement(new{})};
+    foreach(var intent in plan.GetProperty("intents").EnumerateArray().OrderBy(x=>x.GetProperty("kind").GetString()=="CALLOUT"?1:0)) {
+        string identity=intent.GetProperty("semantic_identity").GetString()!,kind=intent.GetProperty("kind").GetString()!,role=intent.GetProperty("owner").GetString()!,key=intent.GetProperty("axis_or_feature").GetString()!;
+        if(!semanticKeys.Add(identity))throw new Exception("DUPLICATE_SEMANTIC_IDENTITY");
+        var v=owners[role];
+        try {
+            GeometryResolution g;Definition d;string orientation="HORIZONTAL";double? expected=null;
+            if(kind=="OVERALL") {
+                var bbox=sem.GetProperty("bounding_box");var raw=EnumerateVisibleProjectedVertices(v);int ai=AxisIndex(key);expected=intent.GetProperty("expected_value_m").GetDouble();
+                if(raw.Count<2)throw new Exception("VISIBLE_VERTICES_UNAVAILABLE");
+                // Registration uses semantic extents, never as a replacement for SystemValue verification.
+                var factors=new double[3];var shifts=new double[3];
+                for(int a=0;a<3;a++) {
+                    string ax="xyz"[a].ToString();double min=bbox.GetProperty("min_"+ax+"_m").GetDouble(),max=bbox.GetProperty("max_"+ax+"_m").GetDouble();
+                    double rmin=raw.Min(r=>r.ModelPoint[a]),rmax=raw.Max(r=>r.ModelPoint[a]),ratio=(rmax-rmin)/(max-min);
+                    factors[a]=Math.Abs(ratio-v.ScaleDecimal)<Math.Abs(ratio-1)?v.ScaleDecimal:1;
+                    shifts[a]=(rmin+rmax)/2-(min+max)/2*factors[a];
+                }
+                var native=raw.Select(r=>r with {ModelPoint=Enumerable.Range(0,3).Select(a=>(r.ModelPoint[a]-shifts[a])/factors[a]).ToArray()}).ToArray();
+                var direction=ProjectModelAxisDirectionToSheet(math,v,key);orientation=ResolveDrawingSpaceOrientation(direction[0],direction[1]);
+                var candidates=(from a in native from b in native where !ReferenceEquals(a.Object,b.Object)&&Math.Abs(Math.Abs(b.ModelPoint[ai]-a.ModelPoint[ai])-expected.Value)<=0.0001 select new{A=a,B=b,Pa=ProjectModelPointToSheet(math,v,a.ModelPoint),Pb=ProjectModelPointToSheet(math,v,b.ModelPoint)}).Where(p=>orientation=="HORIZONTAL"?Math.Abs(p.Pa[1]-p.Pb[1])<1e-7:Math.Abs(p.Pa[0]-p.Pb[0])<1e-7).ToArray();
+                var pair=candidates.FirstOrDefault()??throw new Exception("ORTHOGONAL_EXTENT_PAIR_UNAVAILABLE");
+                g=new GeometryResolution(new[]{pair.A,pair.B},key,null,null,expected*1000,raw.Count,null);d=MakeDef(identity,"OVERALL_DIMENSION",role,key,null);
+                Console.WriteLine($"VERTEX_FRAME_REGISTRATION role={role};axis={key};factors={JsonSerializer.Serialize(factors)};shifts={JsonSerializer.Serialize(shifts)}");
+            }else {
+                var h=holes[key];var holeMatches=MatchHoleCircles(EnumerateVisibleCircles(v),h.PlacementPoints);
+                if(kind=="PATTERN") {
+                    if(holeMatches.Count<2)throw new Exception("PATTERN_OPENINGS_NOT_BINDABLE");var pair=SelectAdjacentPair(holeMatches);
+                    expected=Distance(pair.A.ModelPoint,pair.B.ModelPoint);
+                    var pa=ProjectModelPointToSheet(math,v,pair.A.ModelPoint);var pb=ProjectModelPointToSheet(math,v,pair.B.ModelPoint);orientation=ResolveDrawingSpaceOrientation(pb[0]-pa[0],pb[1]-pa[1]);
+                    g=new GeometryResolution(new[]{pair.A,pair.B},null,key,h,expected*1000,holeMatches.Count,null);d=MakeDef(identity,"HOLE_PITCH",role,"",key);
+                }else {
+                    if(holeMatches.Count==0)throw new Exception("HOLE_OPENING_UNAVAILABLE");g=new GeometryResolution(new[]{holeMatches[0]},null,key,h,null,holeMatches.Count,null);d=MakeDef(identity,"HOLE_CALLOUT",role,"",key);
+                }
+            }
+            d.Dimension=JsonSerializer.SerializeToElement(new{orientation});definitions.Add(d);
+            object result;
+            if(kind=="CALLOUT") result=CreateHoleCallout(dm,v,d,g,0);
+            else if(kind=="PATTERN")result=CreatePitchDimension(dm,v,d,g,0);
+            else result=CreateLinearDimension(dm,math,v,d,g,0);
+            var je=JsonSerializer.SerializeToElement(result);string createdId=je.GetProperty("creation_identity").GetString()!;
+            DisplayDimension? display=null;for(var dd=v.GetFirstDisplayDimension5() as DisplayDimension;dd!=null;dd=dd.GetNext5() as DisplayDimension)if(dd.GetNameForSelection()==createdId)display=dd;
+            if(display==null)throw new Exception("CREATED_DISPLAY_MISSING");
+            if(expected.HasValue&&Math.Abs(((Dimension)display.GetDimension()).SystemValue-expected.Value)>0.0001){DeleteAnnotation(dm,display);throw new Exception("SEMANTIC_SYSTEMVALUE_MISMATCH");}
+            var endpoints=g.Entities.Select(e=>ProjectModelPointToSheet(math,v,e.ModelPoint)).ToArray();
+            var text=kind=="CALLOUT"?new string('X',layout.GetProperty("callout_estimated_characters").GetInt32()):(expected!.Value*1000).ToString("0.###",System.Globalization.CultureInfo.InvariantCulture);
+            annotations.Add(new PolicyAnnotation(identity,kind,role,display,endpoints,text,orientation,result));
+        }catch(Exception e){unresolved.Add(new{intent=identity,status="NOT_EVALUATED",reason=e.Message});Console.WriteLine("INTENT_UNRESOLVED:"+identity+":"+e.Message);}
+    }
+    stage="COLLISION_LAYOUT";
+    var occupiedBoxes=new List<double[]>();var lines=new List<double[]>();var placements=new List<object>();
+    bool LineBox(double[] l,double[] b) {
+        double t0=0,t1=1,dx=l[2]-l[0],dy=l[3]-l[1];double[] p={-dx,dx,-dy,dy},q={l[0]-b[0],b[2]-l[0],l[1]-b[1],b[3]-l[1]};
+        for(int i=0;i<4;i++){if(Math.Abs(p[i])<1e-12){if(q[i]<0)return false;}else{double t=q[i]/p[i];if(p[i]<0)t0=Math.Max(t0,t);else t1=Math.Min(t1,t);if(t0>t1)return false;}}return true;
+    }
+    bool Cross(double[] a,double[] b) {
+        double Orient(double x,double y,double u,double v,double p,double q)=>(u-x)*(q-y)-(v-y)*(p-x);
+        return Orient(a[0],a[1],a[2],a[3],b[0],b[1])*Orient(a[0],a[1],a[2],a[3],b[2],b[3]) < -1e-16 && Orient(b[0],b[1],b[2],b[3],a[0],a[1])*Orient(b[0],b[1],b[2],b[3],a[2],a[3]) < -1e-16;
+    }
+    var weights=layout.GetProperty("penalty_weights");double W(string k)=>weights.GetProperty(k).GetDouble();
+    foreach(var a in annotations.OrderBy(x=>x.Kind=="CALLOUT"?1:0).ThenBy(x=>x.Kind=="OVERALL"?1:0)) {
+        var b=ToDoubles(owners[a.Role].GetOutline());bool callout=a.Kind=="CALLOUT";
+        double tw=a.Text.Length*Metric("text_character_width_mm")+2*Metric("text_padding_mm"),th=Metric("text_height_mm")+2*Metric("text_padding_mm");
+        if(a.Orientation=="VERTICAL"&&!callout)(tw,th)=(th,tw);
+        var choices=new List<(double Score,double[] Position,double[] Box,List<double[]> Lines,string Side,int Lane)>();
+        foreach(var side in layout.GetProperty("candidate_sides").EnumerateArray().Select(x=>x.GetString()!)) {
+            if(!callout&&((a.Orientation=="VERTICAL")!=(side=="LEFT"||side=="RIGHT")))continue;
+            for(int lane=0;lane<layout.GetProperty("lane_count").GetInt32();lane++) {
+                double off=Metric("lane_offset_mm")+lane*Metric("lane_spacing_mm");
+                foreach(double fraction in callout?new[]{0.0,0.5,1.0}:new[]{0.5}) {
+                    double x=side=="LEFT"?b[0]-off-tw/2:side=="RIGHT"?b[2]+off+tw/2:b[0]+fraction*(b[2]-b[0]);
+                    double y=side=="BOTTOM"?b[1]-off-th/2:side=="TOP"?b[3]+off+th/2:b[1]+fraction*(b[3]-b[1]);
+                    var box=new[]{x-tw/2,y-th/2,x+tw/2,y+th/2};var candidateLines=new List<double[]>();
+                    if(callout)candidateLines.Add(new[]{a.Endpoints[0][0],a.Endpoints[0][1],x,y});
+                    else {
+                        foreach(var ep in a.Endpoints)candidateLines.Add(a.Orientation=="VERTICAL"?new[]{ep[0],ep[1],x,ep[1]}:new[]{ep[0],ep[1],ep[0],y});
+                        candidateLines.Add(a.Orientation=="VERTICAL"?new[]{x,a.Endpoints[0][1],x,a.Endpoints[1][1]}:new[]{a.Endpoints[0][0],y,a.Endpoints[1][0],y});
+                    }
+                    double penalty=occupiedBoxes.Count(o=>Overlap(o,box))*W("overlap")+(lines.Count(l=>LineBox(l,box))+candidateLines.Sum(l=>occupiedBoxes.Count(o=>LineBox(l,o))))*W("line_text")+viewBoxes.Count(v=>Overlap(v,box))*W("view")+(reserves.Count(r=>Overlap(r,box))+(Outside(box)?1:0))*W("reserved");
+                    if(callout)penalty+=Math.Sqrt(Math.Pow(x-a.Endpoints[0][0],2)+Math.Pow(y-a.Endpoints[0][1],2))*1000*W("leader_length");
+                    penalty+=candidateLines.Sum(l=>lines.Count(other=>Cross(l,other)))*W("crossing");
+                    choices.Add((penalty,new[]{x,y},box,candidateLines,side,lane));
+                }
+            }
+        }
+        var best=choices.OrderBy(c=>c.Score).First();
+        var annotation=(Annotation)a.Display.GetAnnotation();annotation.SetPosition2(best.Position[0],best.Position[1],0);occupiedBoxes.Add(best.Box);lines.AddRange(best.Lines);
+        placements.Add(new{annotation_id=a.Id,position_m=best.Position,estimated_text_bbox_m=best.Box,lines=best.Lines,side=best.Side,lane=best.Lane,score=best.Score,bbox_authority="POLICY_ESTIMATED_TEXT_EXTENT",candidate_count=choices.Count});
+        var row=JsonSerializer.Deserialize<Dictionary<string,JsonElement>>(JsonSerializer.Serialize(a.Lineage))!;row["actual_position_m"]=JsonSerializer.SerializeToElement(AnnotationPosition(a.Display));lineage.Add(row);
+    }
+    Write(output,"annotation_layout.json",placements);Write(output,"annotation_lineage.json",lineage);Write(output,"annotation_definitions.json",definitions);
+    Write(output,"estimated_layout_validation.json",new{authority="ESTIMATED_TEXT_AND_IDEALIZED_EXTENSION_LEADER_SEGMENTS",text_bbox_overlap_count=Enumerable.Range(0,occupiedBoxes.Count).Sum(i=>occupiedBoxes.Skip(i+1).Count(b=>Overlap(occupiedBoxes[i],b))),reserved_text_overlap_count=occupiedBoxes.Sum(b=>reserves.Count(r=>Overlap(b,r))),text_outside_usable_count=occupiedBoxes.Count(Outside),segment_crossing_count=Enumerable.Range(0,lines.Count).Sum(i=>lines.Skip(i+1).Count(l=>Cross(lines[i],l))),full_native_geometry_crossing="NOT_EVALUATED",qa_requires_saved_pdf=true});
+    var centerEvidence=new List<object>();
+    if(layout.GetProperty("center_marks_for_verified_patterns").GetBoolean())foreach(var h in holes.Values) {
+        var group=annotations.FirstOrDefault(a=>a.Kind=="PATTERN"&&a.Id=="PATTERN:"+h.Id);
+        if(group==null)continue;
+        try {
+            var v=owners[group.Role];var circles=MatchHoleCircles(EnumerateVisibleCircles(v),h.PlacementPoints);
+            if(ClassifyPattern(h.PlacementPoints)!="LINEAR_PATTERN"||circles.Count!=h.PlacementPoints.Count)throw new Exception("LINEAR_PATTERN_CENTERMARK_EVIDENCE_INCOMPLETE");
+            dm.ClearSelection2(true);bool selected=true;for(int i=0;i<circles.Count;i++)selected&=circles[i].Object.Select4(i>0,null);
+            if(!selected)throw new Exception("CENTERMARK_SELECTION_FAILED");
+            var mark=drawing.InsertCenterMark3((int)swCenterMarkStyle_e.swCenterMark_LinearGroup,false,false);
+            if(mark==null)throw new Exception("NATIVE_CENTERMARK_RETURNED_NULL");
+            if(layout.GetProperty("connect_verified_pattern_centers").GetBoolean())mark.ConnectionLines=(int)swCenterMarkConnectionLine_e.swCenterMark_ShowLinearConnectLines;
+            centerEvidence.Add(new{semantic_ref=h.Id,status="CREATED_PENDING_REOPEN",group_count=mark.GroupCount,connection_lines=mark.ConnectionLines,style=mark.Style,name=mark.GetAnnotation().GetName()});
+        }catch(Exception e){centerEvidence.Add(new{semantic_ref=h.Id,status="NOT_EVALUATED",reason=e.Message});}
+        finally{dm.ClearSelection2(true);}
+    }
+    Write(output,"centerline_api_evidence.json",centerEvidence);
+    stage="SAVE";timeout.Change(20000,System.Threading.Timeout.Infinite);string stem=args[5];string saved=manual?Path.GetFullPath(args[6]):Path.Combine(output,stem+".SLDDRW"),pdf=manual?Path.ChangeExtension(Path.GetFullPath(args[6]),".pdf"):Path.Combine(output,stem+".pdf");
+    if((!existingBase&&File.Exists(saved))||File.Exists(pdf))throw new Exception("OUTPUT_ALREADY_EXISTS");
+    int activationError=0;var activeDrawing=sw.ActivateDoc3(dm.GetTitle(),false,(int)swRebuildOnActivation_e.swDontRebuildActiveDoc,ref activationError) as ModelDoc2;
+    if(activeDrawing==null||activeDrawing.GetType()!=(int)swDocumentTypes_e.swDocDRAWING)throw new Exception("DRAWING_ACTIVATION_FAILED");
+    dm.ClearSelection2(true);dm.EditRebuild3();err=warn=0;
+    if(manual) {
+        visibleSession.Checkpoint(dm,owners.Count,owners.Values.Select(v=>v.ScaleDecimal).Distinct(),saved);
+        stage="WAITING_FOR_MANUAL_SAVE";timeout.Change(System.Threading.Timeout.Infinite,System.Threading.Timeout.Infinite);
+        var checkpoint=new{status="WAITING_FOR_MANUAL_SAVE",drawing_title=dm.GetTitle(),view_count=owners.Count,scale=owners.Values.Select(v=>v.ScaleDecimal).Distinct().ToArray(),overall_dimension_count=annotations.Count(a=>a.Kind=="OVERALL"),native_hole_callout_count=annotations.Count(a=>a.Kind=="CALLOUT"),center_mark_groups=centerEvidence,runtime_view_overlap_count=viewOverlap,runtime_reserved_overlap_count=reservedOverlap,suggested_output_path=saved,generation="AUTOMATIC",slddrw_persistence="MANUAL_CHECKPOINT",pdf="NOT_EVALUATED"};
+        Write(output,"manual_persistence_checkpoint.json",checkpoint);
+        Console.WriteLine("POLICY_V2_READY_FOR_MANUAL_SAVE=true\n"+JsonSerializer.Serialize(checkpoint,new JsonSerializerOptions{WriteIndented=true}));
+        Console.WriteLine($"VIEW_ROLES={string.Join(",",owners.Keys)}\nOVERALL_DIMENSIONS={string.Join(",",annotations.Where(a=>a.Kind=="OVERALL").Select(a=>((Dimension)a.Display.GetDimension()).SystemValue*1000))}\nHOLE_PITCH={string.Join(",",annotations.Where(a=>a.Kind=="PATTERN").Select(a=>((Dimension)a.Display.GetDimension()).SystemValue*1000))}\nNATIVE_HOLE_CALLOUT_COUNT={annotations.Count(a=>a.Kind=="CALLOUT"&&a.Display.IsHoleCallout())}\nCENTER_MARK_GROUP_COUNT={owners.Values.Sum(v=>v.GetCenterMarkCount())}\nVIEW_OVERLAP_COUNT={viewOverlap}\nRESERVED_REGION_OVERLAP_COUNT={reservedOverlap}\nDUPLICATE_DIMENSION_COUNT={definitions.Count-definitions.Select(d=>d.AnnotationId).Distinct().Count()}");
+        Console.WriteLine("WAITING_FOR_USER_CONFIRMATION: press ENTER after File > Save As; no automatic drawing save will be called.");
+        while(true) {
+            string? response=Console.ReadLine();
+            if(response==null){System.Threading.Thread.Sleep(500);continue;}
+            GC.KeepAlive(visibleSession.Root);
+            if(response.Trim().Length>0&&!response.Trim().Equals("SAVED",StringComparison.OrdinalIgnoreCase))continue;
+            if(!File.Exists(saved)||new FileInfo(saved).Length==0){Console.WriteLine("MANUAL_FILE_MISSING; continue waiting");continue;}
+            if(!string.Equals(dm.GetPathName(),saved,StringComparison.OrdinalIgnoreCase)||dm.GetSaveFlag()){Console.WriteLine("MANUAL_TARGET_NOT_CURRENT_SAVED_DRAWING; continue waiting");continue;}
+            break;
+        }
+        Console.WriteLine("MANUAL_PERSISTENCE_CONFIRMED");
+        Console.WriteLine($"MANUAL_SAVE_FILE_EXISTS={File.Exists(saved)}\nMANUAL_SAVE_FILE_SIZE_BYTES={new FileInfo(saved).Length}\nSLDDRW_PERSISTENCE=MANUAL_CHECKPOINT");
+    }else {
+        Console.WriteLine($"SAVE_START path={saved};active_type={activeDrawing.GetType()};active_title={activeDrawing.GetTitle()}");
+        bool saveResult=existingBase?dm.Save3((int)swSaveAsOptions_e.swSaveAsOptions_Silent,ref err,ref warn):dm.Extension.SaveAs(saved,0,(int)swSaveAsOptions_e.swSaveAsOptions_Silent,null,ref err,ref warn);
+        if(!saveResult||err!=0)throw new Exception($"SAVE_FAILED:{err}/{warn}");
+        Console.WriteLine($"SAVE_PASS:{err}/{warn}");
+    }
+    stage="REOPEN";timeout.Change(60000,System.Threading.Timeout.Infinite);sw.CloseDoc(dm.GetTitle());err=warn=0;
+    var reopened=sw.OpenDoc6(saved,(int)swDocumentTypes_e.swDocDRAWING,(int)swOpenDocOptions_e.swOpenDocOptions_Silent,"",ref err,ref warn) as DrawingDoc??throw new Exception("REOPEN_FAILED");
+    var reopenedInventory=EnumerateReopenedAnnotations(reopened);var matches=ReadCreationIdentities(lineage).Select(x=>CorrelatePersistedAnnotation(x,reopenedInventory)).ToArray();
+    var viewChecks=new List<object>();var centerChecks=new List<object>();var dimensionChecks=new List<object>();int count=0;bool states=true;int nativeCount=0,variableCount=0;
+    for(var v=(reopened.GetFirstView() as View)?.GetNextView() as View;v!=null;v=v.GetNextView() as View) {
+        count++;var spec=plan.GetProperty("views")[count-1];var pp=spec.GetProperty("placement");var sc=spec.GetProperty("scale");var actual=ToDoubles(v.Position);
+        bool state=Math.Abs(actual[0]-pp.GetProperty("x_m").GetDouble())<1e-8&&Math.Abs(actual[1]-pp.GetProperty("y_m").GetDouble())<1e-8&&Math.Abs(v.ScaleDecimal-sc.GetProperty("numerator").GetDouble()/sc.GetProperty("denominator").GetDouble())<1e-9&&(v.ReferencedDocument as ModelDoc2)?.GetPathName()==modelPath;states&=state;
+        viewChecks.Add(new{name=v.Name,state_preserved=state,outline_m=ToDoubles(v.GetOutline()),position_m=actual,scale=v.ScaleDecimal});
+        for(var cm=v.GetFirstCenterMark();cm!=null;cm=cm.GetNext())centerChecks.Add(new{view=v.Name,name=cm.GetAnnotation().GetName(),group_count=cm.GroupCount,connection_lines=cm.ConnectionLines,detached=cm.HasDetachCenterMark()});
+        for(var dd=v.GetFirstDisplayDimension5() as DisplayDimension;dd!=null;dd=dd.GetNext5() as DisplayDimension) {
+            bool isHole=dd.IsHoleCallout();bool vars=isHole&&dd.GetHoleCalloutVariables()!=null;if(isHole)nativeCount++;if(vars)variableCount++;
+            dimensionChecks.Add(new{view=v.Name,identity=dd.GetNameForSelection(),system_value_m=(dd.GetDimension() as Dimension)?.SystemValue,is_hole_callout=isHole,variables_available=vars});
+        }
+    }
+    Write(output,"reopen_detail.json",new{views=viewChecks,center_marks=centerChecks,dimensions=dimensionChecks,native_hole_callout_count=nativeCount,native_hole_callout_variables=variableCount});
+    stage="PDF";timeout.Change(20000,System.Threading.Timeout.Infinite);err=warn=0;
+    var reopenedModel=(ModelDoc2)reopened;int activeError=0;sw.ActivateDoc3(reopenedModel.GetTitle(),false,(int)swRebuildOnActivation_e.swDontRebuildActiveDoc,ref activeError);reopenedModel.ClearSelection2(true);
+    if(!reopenedModel.Extension.SaveAs(pdf,0,(int)swSaveAsOptions_e.swSaveAsOptions_Silent,null,ref err,ref warn)||!File.Exists(pdf)||new FileInfo(pdf).Length==0)throw new Exception($"PDF_FAILED:{err}/{warn}");
+    Console.WriteLine($"PDF_PASS path={pdf};size_bytes={new FileInfo(pdf).Length};persistence={(manual?"MANUAL_CHECKPOINT":"AUTOMATIC")}");
+    Write(output,stem+"_validation.json",new{status=matches.All(m=>m.Persisted)&&states?"PARTIAL":"FAIL",selected_view_count=count,view_state_preserved=states,views=viewChecks,annotations=annotations.Count,persisted=matches.Count(m=>m.Persisted),native_hole_callout_persisted=matches.Count(m=>m.Persisted&&m.NativeHoleCallout),matches,unresolved,view_overlap_count=viewOverlap,reserved_overlap_count=reservedOverlap,view_boundary=viewBoxes.Any(Outside)?"FAIL":"PASS",duplicate_dimensions=0,centerline="NOT_EVALUATED",hidden_line="NOT_EVALUATED",crossing="NOT_EVALUATED",bbox_authority="ESTIMATED_REQUIRES_PDF_VISUAL_QA",drawing_path=saved,pdf_path=pdf,hardcoded_current_model_branches=0});
+    Console.WriteLine("POLICY_V2_COMPLETE");return 0;
+}catch(Exception e){Console.WriteLine($"stage={stage}\n{e}");return 2;}
+
+
+

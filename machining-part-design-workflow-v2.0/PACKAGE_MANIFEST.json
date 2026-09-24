@@ -1,0 +1,36 @@
+{
+  "included": [
+    "skills/machining-part-design-workflow",
+    "mcp/current-solidworks-mcp",
+    "current-project/src",
+    "current-project/config",
+    "current-project/docs",
+    "current-project/tools",
+    "current-project/general_drawing_planner",
+    "current-project/general_semantic_extractor",
+    "current-project/policy_drawing_runtime",
+    "current-project/solidworks_mcp_server",
+    "current-project/experimental/dp90_pdf_delivery_executor_20260923",
+    "mcp/current-drawing-mcp"
+  ],
+  "source_v1_zip": "machining-part-design-workflow-v1.0.zip",
+  "version": "2.0.0",
+  "package_name": "machining-part-design-workflow",
+  "generated_utc": "2026-09-24T07:50:15.1691905Z",
+  "excluded": [
+    "**/bin/**",
+    "**/obj/**",
+    "**/__pycache__/**",
+    "tmp/**",
+    "working/**",
+    "run outputs/**"
+  ],
+  "company_content_redaction": false,
+  "validation": {
+    "binaries_excluded": true,
+    "cache_dirs_excluded": true,
+    "source_only": true
+  },
+  "source_file_count": 142,
+  "source_bytes": 1146728.0
+}

@@ -1,0 +1,63 @@
+{
+  "schema_version": "1.0",
+  "status": "INTEGRATED_POLICY_WITH_EXPLICIT_CAPABILITY_LIMITS",
+  "policy_version": "1.1",
+  "view_policy": {"minimum_orthographic_view_count": 3, "preferred_orthographic_view_count": 3, "maximum_orthographic_view_count": 4, "allow_human_override": true},
+  "planning": {
+    "allowed_scales": [[10,1],[5,1],[2,1],[1,1],[1,2],[1,5],[1,10],[1,20],[1,50],[1,100]],
+    "annotation_padding_mm": 28,
+    "inter_view_spacing_mm": 24,
+    "main_score_weights": {"area": 1,"visible_geometry": 1,"hole_visibility": 6,"semantic_coverage": 3,"complexity": 0.5},
+    "redundancy_penalty": 2,
+    "projection": "first_angle",
+    "sparse_hole_max_count": 3,
+    "permit_pitch_without_datum_when_location_unresolved": true,
+    "opposite_tie_break": "input_order_after_equal_coverage_and_score",
+    "template_profile": "config/template_profiles/company_landscape.json"
+  },
+  "annotation_layout": {
+    "lane_offset_mm": 12,"lane_spacing_mm": 8,"lane_count": 5,
+    "text_height_mm": 4,"text_character_width_mm": 2.2,"text_padding_mm": 2,
+    "callout_estimated_characters": 30,
+    "candidate_sides": ["TOP","BOTTOM","LEFT","RIGHT"],
+    "penalty_weights": {"overlap":10000,"line_text":10000,"reserved":100000,"view":10000,"leader_length":1,"crossing":100},
+    "center_marks_for_verified_patterns": true,
+    "connect_verified_pattern_centers": true
+  },
+  "view": {
+    "main_view": "geometry_based_selection",
+    "count": "minimum_sufficient_semantic_coverage",
+    "scale": "automatic_fit_to_available_sheet",
+    "placement": "sheet_utilization_with_annotation_reserves",
+    "hidden_lines": "feature_visibility_requirements",
+    "view_policy": {
+      "minimum_orthographic_view_count": 3,
+      "preferred_orthographic_view_count": 3,
+      "maximum_orthographic_view_count": 6,
+      "allow_human_override": true
+    }
+  },
+  "dimensions": {
+    "overall": "mandatory_where_meaningful",
+    "sparse_holes": "direct_or_baseline_location",
+    "dense_regular_patterns": "datum_plus_pitch_or_array",
+    "symmetry_and_centerlines": "require_geometry_evidence",
+    "placement": "prefer_outside_allow_local_detail_inside",
+    "spacing": "uniform",
+    "crossings": "avoid_and_report_unevaluated_if_detector_unavailable",
+    "duplicates": "reject",
+    "geometric_identity_tolerance_m": 1e-8,
+    "avoid_unnecessary_chain_dimensions": true,
+    "array_hole_centerlines": "connected"
+  },
+  "holes": {
+    "thread_counterbore_countersink_depth": "semantic_evidence_only",
+    "backside": "hidden_line_representation_if_required",
+    "pin_hole_H7": "explicit_pin_fit_intent_only",
+    "infer_H7_from_cylinder": false,
+    "chamfer": "identified_chamfer_semantics_only"
+  },
+  "automatic_scope": ["geometry_based_view_selection", "view_count", "scale", "placement", "overall_dimensions", "supported_feature_locations", "hole_pattern_pitch", "HoleWizard_callouts", "redundancy_suppression", "basic_annotation_lanes"],
+  "explicit_metadata_or_review_required": ["ambiguous_datum", "pin_hole_H7_intent", "unsupported_non_HoleWizard_special_holes", "ambiguous_hidden_lines", "unsupported_GDT", "process_specific_intent"],
+  "capability_note": "Policy requirements are not a claim that every capability is implemented or validated. Never fabricate design intent."
+}

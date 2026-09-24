@@ -1,0 +1,14 @@
+name: machining-thread-detection-workflow
+version: 2.0.0
+category: engineering-cad-thread-detection
+runtime:
+  agent: optional
+  mcp: included
+  solidworks: required-for-native-probes
+quality:
+  evidence_first: true
+  fail_closed: true
+  company_content_redacted: false
+contents:
+  source: src/sw_worker
+  mcp: mcp/sw-thread-audit-local

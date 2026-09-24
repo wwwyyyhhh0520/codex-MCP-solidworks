@@ -1,0 +1,5 @@
+{
+  "source": "C:\\Users\\18015\\Documents\\ChatGPT\\New project\\general_annotation_executor\\Program.cs",
+  "sha256": "ad6bfc7537319b9279f11a8fd043f6556288c9d396747ed4c31a3b4cc19a3882",
+  "adaptation": "native_only fallback guard; policy runner invokes existing helpers"
+}

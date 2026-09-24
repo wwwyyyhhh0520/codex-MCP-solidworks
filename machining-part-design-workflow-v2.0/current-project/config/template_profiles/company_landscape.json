@@ -1,0 +1,20 @@
+{
+  "profile_version":"1.0",
+  "source":"Conservative normalized envelope measured from the supplied company landscape template PDF; not a part-specific profile",
+  "sheet_size_authority":"runtime Sheet.GetSize; must match projection probe",
+  "margin_mm":10,
+  "reserved_regions":[
+    {"name":"title_block","normalized_bbox":[0.77,0,1,0.24]},
+    {"name":"revision_table","normalized_bbox":[0.83,0.93,1,1]},
+    {"name":"right_template_strip","normalized_bbox":[0.93,0,1,1]}
+  ],
+  "usable_normalized_bbox":[0,0,0.76,0.93],
+  "standard_orientation_frames":{
+    "FRONT":{"normal":[0,0,1],"right":[1,0,0],"up":[0,1,0]},
+    "BACK":{"normal":[0,0,-1],"right":[-1,0,0],"up":[0,1,0]},
+    "LEFT":{"normal":[-1,0,0],"right":[0,0,1],"up":[0,1,0]},
+    "RIGHT":{"normal":[1,0,0],"right":[0,0,-1],"up":[0,1,0]},
+    "TOP":{"normal":[0,1,0],"right":[1,0,0],"up":[0,0,-1]},
+    "BOTTOM":{"normal":[0,-1,0],"right":[1,0,0],"up":[0,0,1]}
+  }
+}

@@ -1,0 +1,15 @@
+﻿{
+    "mcpServers":  {
+                       "solidworks_audit_v2":  {
+                                                   "args":  [
+                                                                "C:\\Users\\18015\\Desktop\\sw_thread_audit_mcp\\sw_worker\\mcp_thread_audit_server.py"
+                                                            ],
+                                                   "tool_timeout_sec":  3600,
+                                                   "command":  "C:\\Users\\18015\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
+                                                   "type":  "stdio",
+                                                   "startup_timeout_sec":  60,
+                                                   "cwd":  "C:\\Users\\18015\\Desktop\\sw_thread_audit_mcp\\sw_worker",
+                                                   "enabled":  true
+                                               }
+                   }
+}

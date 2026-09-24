@@ -1,0 +1,19 @@
+{
+  "name": "sw-thread-audit-local",
+  "version": "0.1.0",
+  "description": "Local SolidWorks thread and hole-side audit MCP plugin.",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "SolidWorks Thread Audit Local",
+    "shortDescription": "Run local SolidWorks thread/hole audits and comparison reports from Codex.",
+    "longDescription": "Connects Codex to the local SolidWorks thread audit worker through MCP. Supports local audit runs, with/without-thread comparison Excel output, and issue location entry points.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Use the local SolidWorks thread audit MCP tools."
+  },
+  "mcpServers": "./.mcp.json"
+}

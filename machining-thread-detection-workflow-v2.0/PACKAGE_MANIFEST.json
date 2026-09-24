@@ -1,0 +1,16 @@
+{
+  "package_name": "machining-thread-detection-workflow",
+  "version": "2.0.0",
+  "company_content_redaction": false,
+  "source_file_count": 37,
+  "source_bytes": 280895.0,
+  "excluded": [
+    "**/__pycache__/**",
+    "**/bin/**",
+    "**/obj/**",
+    "**/output/**",
+    "**/logs/**",
+    "historical backup scripts"
+  ],
+  "generated_utc": "2026-09-24T08:08:16.6473744Z"
+}
