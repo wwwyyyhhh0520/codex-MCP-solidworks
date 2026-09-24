@@ -1,6 +1,6 @@
 # codex-MCP-solidworks
 
-公司交付用的 SolidWorks 自动化与工程设计工具包。
+SolidWorks 自动化与工程设计工具包。
 
 ## 包含内容
 
